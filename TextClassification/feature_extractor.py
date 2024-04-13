@@ -3,6 +3,7 @@
 from datasets import load_dataset
 from transformers import DistilBertTokenizer
 import datasets
+import numpy as np
 
 def tokenize(batch):
     return tokenizer(batch["text"], padding=True, truncation=True)
@@ -10,13 +11,13 @@ def tokenize(batch):
 model_ckpt = "distilbert-base-uncased"
 tokenizer = DistilBertTokenizer.from_pretrained(model_ckpt)
 
-train 		= load_dataset('emotion', split='train[:1%]')
-valid	 	= load_dataset('emotion', split='validation[:1%]')
+train 		= load_dataset('emotion', split='train[:5%]')
+valid	 	= load_dataset('emotion', split='validation[:5%]')
 test 		= load_dataset('emotion', split='test[:1%]')
 
-#emotions = {'train':train, 'validation':valid, 'test':test}
+#emotions = {'train':train, 'valid':valid, 'test':test}
 
-emotions = datasets.DatasetDict({'train':train, 'validation':valid, 'test':test})
+emotions = datasets.DatasetDict({'train':train, 'valid':valid, 'test':test})
 
 # The below return datasets or datasets in a list, but not in a dict.
 #emotions = load_dataset("emotion", split=['train[:1%]'])
@@ -89,7 +90,82 @@ emotions_last_cvs = emotions_encoded.map(extract_last_context_vector, batched=Tr
 
 print(emotions_last_cvs['train'].column_names)
 
+X_train = np.array(emotions_last_cvs['train']['last_cv'])
+X_valid = np.array(emotions_last_cvs['valid']['last_cv'])
+y_train = np.array(emotions_last_cvs['train']['label'])
+y_valid = np.array(emotions_last_cvs['valid']['label'])
+
+# p. 42-43 shows how you can vizualize the sentiments in 2D via UMAP
+
 # At this point we have the last context vector for each sequence. Now we can train a classifier on it.
+# We can use a nn for this, but logistic regression can work as well and does not require a GPU to train it.
+
+from sklearn.linear_model import LogisticRegression
+
+lr_clf = LogisticRegression(max_iter=3000)							# Increase max_iter to guarantee convergence.
+lr_clf.fit(X_train, y_train)
+# score here is the accuracy. Random would result in x% where x is 100/number of classes, assuming equal distribution over classes.
+print(lr_clf.score(X_valid, y_valid))
+
+# At this point we have trained our LR classifier.
+
+# p. 44 shows how to use the sklearn DummyClassifier to compare this with simple heuristics and are a bit better than random.
+
+# Confusion matrix is next.
+
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+import matplotlib.pyplot as plt
+
+def plot_confusion_matrix(y_preds, y_true, labels):						# labels is just to get the emotion names.
+
+
+    num_elements = len(labels)
+    X_Tick_List = []
+    X_Tick_Label_List = []
+
+    for item in range (0,num_elements):
+        X_Tick_List.append(item)
+        X_Tick_Label_List.append(labels[item])
+
+    #print("--------------")
+    #print(X_Tick_List)
+    #print("--------------")
+    #print(X_Tick_Label_List)
+    #print("--------------")
+    #plt.xticks(ticks = X_Tick_List, labels = X_Tick_Label_List, rotation = 25,fontsize = 8)
+
+
+
+    cm = confusion_matrix(y_true, y_preds, normalize='true')
+    print(cm)
+    fix, ax = plt.subplots(figsize=(6,6))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    disp.plot(cmap='Blues', values_format='.2f', ax=ax, colorbar=False)
+    plt.title('Normalized confusion matrix')
+    plt.show()
+
+# y_true are the labels from our validation set. y_preds we need to get by pushing the validation samples through the logistics regression.
+
+y_preds = lr_clf.predict(X_valid)
+labels = emotions['train'].features['label'].names
+
+print('*************************')
+print(y_valid)
+print('*************************')
+print(y_preds)
+print('*************************')
+
+plot_confusion_matrix(y_preds, y_valid, labels)
+
+
+
+
+
+
+
+
+
+
 
 
 
