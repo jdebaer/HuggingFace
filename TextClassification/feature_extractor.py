@@ -24,8 +24,6 @@ emotions = datasets.DatasetDict({'train':train, 'validation':valid, 'test':test}
 
 emotions_encoded = emotions.map(tokenize, batched=True, batch_size=None)
 
-exit(0)
-
 ###################### New #####################
 
 # Feature extraction is done from the context vectors returned by the Encoder, which normally go to the Decoder for the cross attention.
@@ -89,7 +87,7 @@ emotions_encoded.set_format('torch', columns=['input_ids', 'attention_mask', 'la
 
 emotions_last_cvs = emotions_encoded.map(extract_last_context_vector, batched=True)
 
-print(emotions_last_cvs.column_names)
+print(emotions_last_cvs['train'].column_names)
 
 # At this point we have the last context vector for each sequence. Now we can train a classifier on it.
 
