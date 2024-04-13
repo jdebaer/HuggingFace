@@ -1,3 +1,5 @@
+# This approach uses the weights of the model as is i.e. they are not getting tuned. 
+
 # For explanations above the ##### section see preceding files.
 
 from datasets import load_dataset
@@ -38,6 +40,8 @@ import torch
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Embedding layer is part of the model, needs to be fed the input ids.
+# When using AutoModel, we get only the body, not a head. We have to create the head ourselves.
+# What we get from the model are the context vectors (one per id) and we're going to use one of them as our "feature".
 model = AutoModel.from_pretrained(model_ckpt).to(device)
 
 text = "this is a test"
