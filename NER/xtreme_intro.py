@@ -53,6 +53,47 @@ panx_de = panx_be['de'].map(create_tag_names)
 #validation  3513  3001  3179
 #test        3496  2865  3394
 
+################################## Adding AutoTokenizer ###########################
+
+from transformers import AutoTokenizer
+
+# From Tokenizer Intro:
+xlmr_model_name = 'xlm-roberta-base'
+xlmr_tokenizer = AutoTokenizer.from_pretrained(xlmr_model_name)
+#text = "Jack Sparrow loves New York!"
+#print(xlmr_tokenizer(text).tokens())
+
+de_sample = panx_de['train'][0]
+# 'tokens' actually means full words.
+# words and labels are lists.
+words, labels = de_sample['tokens'], de_sample['ner_tags']
+
+# Now let's get the tokens.
+# xlmr_tokenizer() returns BatchEncoding object which prints to a dict of input_ids and attention_mask.
+# Calling tokens() on this object returns a list of the tokens.
+batch_encoding = xlmr_tokenizer(words, is_split_into_words=True)		# is_split_into_words indicated that list elements are one sentence
+tokens = batch_encoding.tokens()		
+
+# ['<s>', '▁2.000', '▁Einwohner', 'n', '▁an', '▁der', '▁Dan', 'zi', 'ger', '▁Buch', 't', '▁in', '▁der', '▁polni', 'schen', 
+
+# We are going to train and inference using these tokens, not the original words.
+# Convention: we only apply the label to the first token of a word, and ignore all the other tokens i.e. we don't use them for training and inference!
+# The way we do this, is we set the class label (normally 0 to 7) to -100, which means that CEL will ignore it and not use it to calc. the loss.
+# Applied to our example:
+# _Dan should get a label, zi and ger should be ignored/get -100.
+# _Buch should get a label, t should be ignored/get -100.
+# We can obtain this by using the word_ids() function of the BatchEncoding object:
+
+word_ids = batch_encoding.word_ids()
+#print(word_ids)
+# [None, 0, 1, 1, 2, 3, 4, 4, 4, 5, 5, 6, 7, 8, 8, 9, 9, 9, 9, 10, 10, 10, 11, 11, None] -> We only need each first new number, that position.
+
+
+
+
+
+
+
 
 
 
