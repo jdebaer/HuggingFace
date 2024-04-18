@@ -73,6 +73,7 @@ words, labels = de_sample['tokens'], de_sample['ner_tags']
 # Calling tokens() on this object returns a list of the tokens.
 batch_encoding = xlmr_tokenizer(words, is_split_into_words=True)		# is_split_into_words indicated that list elements are one sentence
 tokens = batch_encoding.tokens()		
+print(tokens)
 
 # ['<s>', '▁2.000', '▁Einwohner', 'n', '▁an', '▁der', '▁Dan', 'zi', 'ger', '▁Buch', 't', '▁in', '▁der', '▁polni', 'schen', 
 
@@ -88,7 +89,33 @@ word_ids = batch_encoding.word_ids()
 #print(word_ids)
 # [None, 0, 1, 1, 2, 3, 4, 4, 4, 5, 5, 6, 7, 8, 8, 9, 9, 9, 9, 10, 10, 10, 11, 11, None] -> We only need each first new number, that position.
 
+# We set the class of every token we're not interested in to -100.
 
+previous_word_idx = None
+id_label_numbers = []
+
+for word_idx in word_ids:
+   if word_idx is None or word_idx == previous_word_idx:
+      id_label_numbers.append(-100)
+   elif word_idx != previous_word_idx:
+      id_label_numbers.append(labels[word_idx])					# word_idx in labels will fetch the right label (labels contains the words).
+   previous_word_idx = word_idx
+
+#print(id_label_numbers)
+
+index2tag = {idx: tag for idx, tag in enumerate(tags.names)}
+
+id_labels = [index2tag[l] if l != -100 else 'IGN' for l in id_label_numbers]
+index = ['Tokens', 'Word IDs', 'ID Label Numbers', 'ID Labels']
+
+#print(pd.DataFrame([tokens, word_ids, id_label_numbers, id_labels]))
+#     0       1           2     3    4     5      6     7     8      9     10   11  ...      13     14     15    16    17      18     19    20    21  22    23    24
+#0   <s>  ▁2.000  ▁Einwohner     n  ▁an  ▁der   ▁Dan    zi   ger  ▁Buch     t  ▁in  ...  ▁polni  schen    ▁Wo     i   wod  schaft    ▁Po  mmer     n   ▁     .  </s>
+#1  None       0           1     1    2     3      4     4     4      5     5    6  ...       8      8      9     9     9       9     10    10    10  11    11  None
+#2  -100       0           0  -100    0     0      5  -100  -100      6  -100    0  ...       5   -100      5  -100  -100    -100      6  -100  -100   0  -100  -100
+#3   IGN       O           O   IGN    O     O  B-LOC   IGN   IGN  I-LOC   IGN    O  ...   B-LOC    IGN  B-LOC   IGN   IGN     IGN  I-LOC   IGN   IGN   O   IGN   IGN
+
+# The second to last line is how we want every sample in our dataset. We do this in tokenize_and_align_labels() in ner.py.
 
 
 

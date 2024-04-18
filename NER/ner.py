@@ -95,6 +95,85 @@ def tag_text(text, tags, model, tokenizer):
 # At this point we know our custom XLMRobertaForTokenClassification can convert text to predicted labels. Now let's prep things to fine-tune en masse.
 
 # 1. We need to tokenize (to ids) all input samples in the dataset. Typically in HF this is done with a map().
+# See xtreme_intro.py for a step by step breakdown, below is the function form.
+
+
+def tokenize_and_align_labels(batch, tokenizer):
+
+    # A function like that that will be used via map() has to be able to produce the result for the whole batch.
+
+    # Get BatchEncoding object for the whole batch (tokenizer can do this).
+    # batch_encoding = tokenizer(batch['tokens'], is_split_into_words=True, truncation=True)   
+
+    batch_encoding = tokenizer(batch['tokens'], is_split_into_words=True)   
+
+    batched_id_label_numbers = []
+
+    for idx, labels in enumerate(batch['ner_tags']):								# We're going over every sample in the batch.
+        word_ids = batch_encoding.word_ids(batch_index = idx)							# Get the word ids (0,0,1,1,1 etc.) for a sample in the batch.
+        previous_word_idx = None
+        id_label_numbers = []
+
+        for word_idx in word_ids:
+            if word_idx is None or word_idx == previous_word_idx:
+                id_label_numbers.append(-100)
+            elif word_idx != previous_word_idx:
+                id_label_numbers.append(labels[word_idx])  
+            previous_word_idx = word_idx
+        
+        batched_id_label_numbers.append(id_label_numbers)
+    batch_encoding['id_label_numbers'] = batched_id_label_numbers
+
+    return batch_encoding
+
+def encode_panx_dataset(corpus, tokenizer):
+    return corpus.map(tokenize_and_align_labels, batched=True, remove_columns=['langs', 'ner_tags', 'tokens'], fn_kwargs={"tokenizer": tokenizer})
+        
+     
+panx_de_encoded = encode_panx_dataset(panx_be['de'], xlmr_tokenizer)
+
+#print(panx_de_encoded)
+##DatasetDict({
+##    train: Dataset({
+##        features: ['input_ids', 'attention_mask', 'id_label_numbers'],
+##        num_rows: 14000
+##    })
+##    validation: Dataset({
+##        features: ['input_ids', 'attention_mask', 'id_label_numbers'],
+##        num_rows: 7000
+##    })
+##    test: Dataset({
+##        features: ['input_ids', 'attention_mask', 'id_label_numbers'],
+##        num_rows: 7000
+##    })
+##})
+#
+#print(panx_de_encoded['train'][0])
+##{
+##'input_ids': [0, 70101, 176581, 19, 142, 122, 2290, 708, 1505, 18363, 18, 23, 122, 127474, 15439, 13787, 14, 15263, 18917, 663, 6947, 19, 6, 5, 2], 
+##'attention_mask': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 
+##'id_label_numbers': [-100, 0, 0, -100, 0, 0, 5, -100, -100, 6, -100, 0, 0, 5, -100, 5, -100, -100, -100, 6, -100, -100, 0, -100, -100]
+##}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
