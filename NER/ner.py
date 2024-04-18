@@ -155,10 +155,64 @@ panx_de_encoded = encode_panx_dataset(panx_be['de'], xlmr_tokenizer)
 ##'id_label_numbers': [-100, 0, 0, -100, 0, 0, 5, -100, -100, 6, -100, 0, 0, 5, -100, 5, -100, -100, -100, 6, -100, -100, 0, -100, -100]
 ##}
 
+# Before we can start training, we still need to define a performance measure.
+# For a prediction to be correct, we need all the words of the entity to be labeled correctly. We are already ignoring the "add-on" tokens. This is about the words, not the tokens.
+
+# Predictions will be dim (batch_size, seq_len, #labels) with dim 2 not softmaxed so the pure logits with the highest one being the prediction.
+# Note that the body will produce a context vector per id, and the head takes that vector and pushed it through a nn to get something in dim '#labels'.
+# Labels will be dim (batch_size, seq_len).
+# We need to convert batches of these predictions and labels to lists of lists, so that seqeval can eval it.
+# Note: seq_len is the amount of ids we got after converting to tokens.
+
+import numpy as np
+
+def align_predictions(predictions, label_ids):
+    preds = np.argmax(predictions, axis=2)										# Dim of preds is now also (batch_size, seq_len).
+    batch_size, seq_len = preds.shape
+    
+    labels_list, preds_list = [], []											# The outer list.
+
+    for batch_idx in range(batch_size):
+        sample_labels_list, sample_preds_list = [], []									# The inner lists. 
+        
+        for seq_idx in range(seq_len):
+            # We don't include ids from prediction and labels if the label has -100 for it.
+            if label_ids[batch_idx, seq_idx] != -100:
+                sample_labels_list.append(index2tag[label_ids[batch_idx][seq_idx]])
+                sample_preds_list.append(index2tag[preds[batch_idx][seq_idx]])
+
+        labels_list.append(sample_labels.list)
+        preds_list.append(sample_preds_list)
+    
+    return preds_list, labels_list
 
 
+############################## FINE-TUNING ###############################
 
+from transformers import TrainingArguments										# For HF Trainer.
 
+num_epochs = 1
+batch_size = 24
+logging_steps = len(panx_de_encoded['train']) // batch_size
+model_name = f'{xlmr_model_name}'-finetuned-panx-de'
+
+training_args = TrainingArguments(
+    output_dir 			= model_name,
+    log_level 			= 'error',
+    num_train_epochs 		= num_epochs,
+    per_device_train_batch_size = batch_size,
+    per_device_eval_batch_size 	= batch_size,
+    evaluation_strategy 	= 'epoch',										# Do validation at end of each epoch.
+    save_steps 			= 1e6,											# Set to large number to disable checkpointing and speed up training.
+    weight_decay		= 0.01,
+    disable_tqdm		= False,
+    logging_steps 		= logging_steps,
+    push_to_hub 		= False)
+    
+
+from seqeval.metrics import f1_score
+
+def compute_metrics(
 
 
 
