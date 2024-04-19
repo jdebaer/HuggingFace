@@ -212,6 +212,7 @@ training_args = TrainingArguments(
 
 from seqeval.metrics import f1_score
 
+# We need compute_metrics() function to feed to Trainer. Interface is that it received 
 def compute_metrics(
 
 
