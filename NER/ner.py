@@ -6,7 +6,7 @@ import torch
 from transformers import AutoTokenizer
 
 langs = ['de', 'fr', 'nl']
-fracs = [0.7, 0.2, 0.1]
+fracs = [0.007, 0.002, 0.001]
 
 panx_be = defaultdict(DatasetDict)
 
@@ -31,7 +31,8 @@ text = "Jack Sparrow loves New York!"
 index2tag = {idx: tag for idx, tag in enumerate(tags.names)}
 tag2index = {tag: idx for idx, tag in enumerate(tags.names)}
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 
 # In HF, every checkpoint (pre-trained model) is assigned  a configuration file that specifies various hyperparameters like vocab_size and hidden_size
 # as well as additional metadata like label names. We're going to overwrite some of these. Basically the AutoConfig class conatains the blueprint
@@ -46,7 +47,7 @@ xlmr_config = AutoConfig.from_pretrained(xlmr_model_name, num_labels=tags.num_cl
 # XLMRobertaForTokenClassification is our own class, defined below. It has inhereited from_pretrained() from RobertaPreTrainedModel.
 
 # If you use the REAL XLMRobertaForTokenClassification class, then the command below is identical!
-xlmr_model = XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
+#xlmr_model = XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
 
 # # At this point we can run a quick inference to see if things are don't fall apart, but of course the head is still untrained so the results
 # # will not be great.
@@ -82,13 +83,23 @@ xlmr_model = XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, c
 # #Tags      O  B-PER  B-PER  B-PER  B-PER  B-PER  B-PER  B-PER  B-PER     O
 # # We put the above experiment's logic in a function that receives text and outputs the last pandas dataframe:
 
+#def tag_text(text, tags, model, tokenizer):
+#    tokens = tokenizer(text).tokens()
+#    input_ids = tokenizer.encode(text, return_tensors='pt').to(device)
+#    logits = model(input_ids).logits
+#    predictions = torch.argmax(logits, dim = -1)
+#    preds_label_names = [tags.names[p] for p in predictions[0].cpu().numpy()]
+#    return (pd.DataFrame([tokens, preds_label_names], index = ['Tokens','Tags']))
+
 def tag_text(text, tags, model, tokenizer):
     tokens = tokenizer(text).tokens()
-    input_ids = tokenizer.encode(text, return_tensors='pt').to(device)
-    logits = model(input_ids).logits
-    predictions = torch.argmax(logits, dim = -1)
-    preds_label_names = [tags.names[p] for p in predictions[0].cpu().numpy()]
-    return (pd.DataFrame([tokens, preds_label_names], index = ['Tokens','Tags']))
+    input_ids = xlmr_tokenizer(text, return_tensors='pt').input_ids.to(device)
+    outputs = model(input_ids)[0]
+    predictions = torch.argmax(outputs, dim=2)
+    preds = [tags.names[p] for p in predictions[0].cpu().numpy()]
+    return pd.DataFrame([tokens, preds], index = ['Tokens','Tags'])
+
+
 
 #print(tag_text(text, tags, xlmr_model, xlmr_tokenizer))
 
@@ -155,6 +166,11 @@ panx_de_encoded = encode_panx_dataset(panx_be['de'], xlmr_tokenizer)
 ##'id_label_numbers': [-100, 0, 0, -100, 0, 0, 5, -100, -100, 6, -100, 0, 0, 5, -100, 5, -100, -100, -100, 6, -100, -100, 0, -100, -100]
 ##}
 
+# forward() has a parameter labels=... -> HF matches this with a column name called 'labels', so make sure your labels are called this.
+# Error you get is: 
+# The model did not return a loss from the inputs, only the following keys: logits. For reference, the inputs it received are input_ids,attention_mask.
+panx_de_encoded = panx_de_encoded.rename_column('id_label_numbers', 'labels')			
+
 # Before we can start training, we still need to define a performance measure.
 # For a prediction to be correct, we need all the words of the entity to be labeled correctly. We are already ignoring the "add-on" tokens. This is about the words, not the tokens.
 
@@ -181,7 +197,7 @@ def align_predictions(predictions, label_ids):
                 sample_labels_list.append(index2tag[label_ids[batch_idx][seq_idx]])
                 sample_preds_list.append(index2tag[preds[batch_idx][seq_idx]])
 
-        labels_list.append(sample_labels.list)
+        labels_list.append(sample_labels_list)
         preds_list.append(sample_preds_list)
     
     return preds_list, labels_list
@@ -194,7 +210,7 @@ from transformers import TrainingArguments										# For HF Trainer.
 num_epochs = 1
 batch_size = 24
 logging_steps = len(panx_de_encoded['train']) // batch_size
-model_name = f'{xlmr_model_name}'-finetuned-panx-de'
+model_name = f'{xlmr_model_name}-finetuned-panx-de'
 
 training_args = TrainingArguments(
     output_dir 			= model_name,
@@ -212,13 +228,50 @@ training_args = TrainingArguments(
 
 from seqeval.metrics import f1_score
 
-# We need compute_metrics() function to feed to Trainer. Interface is that it received 
-def compute_metrics(
+# We need compute_metrics() function to feed to Trainer. 
+# We're going to use HF Trainer, which requires a compute_metrics() function. Input will be a EvalPrediction object (named tuple with 'predictions' and
+# 'label_ids' and it needs to return a dict that maps metric's name to its value. We'll use our align_predictions() function.
+
+def compute_metrics(eval_pred):
+    # Create the lists of lists that seqeval can work with.
+    y_pred, y_label = align_predictions(eval_pred.predictions, eval_pred.label_ids)  
+   
+    return {'f1': f1_score(y_label, y_pred)}
+
+# Since we're doing the same matrix calculations on each sample in the batch, all seq_lens in a batch have to be the same, and typically we take the 
+# max len over all labels and inputs and we padd things up to match that (and add a padding mask). We do all this manually in EncoderDecoder, but HF
+# has DataCollatorForTokenClassification for this. Note that for TextClassification this was not an issue since we're only taking one token per sample
+# and we're also predicting one value.
+
+from transformers import DataCollatorForTokenClassification
+
+data_collator = DataCollatorForTokenClassification(xlmr_tokenizer)				# Prob. gets the padding token from the tokenizer.
+
+# Trainer can create a model object at every invocation of train() if we provide a model_init() for it.
+
+def model_init():
+    return XLMRobertaForTokenClassification.from_pretrained(xlmr_model_name, config=xlmr_config).to(device)
+
+# Now let's train.
+
+from transformers import Trainer
+
+trainer = Trainer(
+    model_init 		= model_init,
+    args 		= training_args,
+    data_collator 	= data_collator,
+    compute_metrics 	= compute_metrics,
+    train_dataset 	= panx_de_encoded['train'],
+    eval_dataset 	= panx_de_encoded['validation'],
+    tokenizer 		= xlmr_tokenizer)
 
 
+trainer.train()
+print(trainer.model.device)
 
 
-
+text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
+print(tag_text(text_de, tags, trainer.model, xlmr_tokenizer))
 
 
 
