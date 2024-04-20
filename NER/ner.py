@@ -298,6 +298,24 @@ print(trainer.model.device)
 text_de = "Jeff Dean ist ein Informatiker bei Google in Kalifornien"
 print(tag_text(text_de, tags, trainer.model, xlmr_tokenizer))
 
+# Closing note 1:
+# p. 109-115 have error analysis tools. The paradigm is the same i.e., we look at the samples with the highest loss to see if we can make any 
+# conclusions about potential flaws in how we train. This is done again with a custom function that calculates the CE losses on a batch, but 
+# sample per sample with gradience calculation disabled. This function is called on the whole HF dataset using map() as usual. See p. 109.
+# The end result is that two additional columns are added to the dataset: 'loss' and 'predicted_label'.
+
+# Closing note 2:
+# p. 115-122 focus on the cross-lingual transfer. We only fine-tuned our model in German, yet it performs well on other languages.
+# To test this we use the trainer.predict(dataset) function vs. trainer.model(input_ids, attention_mask). The former does not require the use of
+# "with toch.no_grad()" since its sole purpose is inferencing only.    
+# The gist of cross-lingual transfer is this: we started with a multi-lingual model that was generically trained with multiple languages. We then
+# use one language to fine-tune it for a specific task, which is NER, and we see that the fine-tuned model actually also performs well for that 
+# same task but in the other languages. This is influenced by "how close" the languages are. Dutch and German will e.g. perform really well with
+# this kind of zero-shot transfer. The takeaway here is that if you have few labeled samples for a language, you can actually fine-tune with ANOTHER
+# language for which you do have a lot of labeled samples, and the model will still perform well in the first language. The experiment in the book
+# p. 118 sees a cutoff point at about 750 labeled samples. So if you have those, then go for fine-tuning in that language.
+# BUT the overall conclusion on p. 120 is that you can group all samples together (no matter the language) and that multilingual training like
+# that will perform really well - and even improve the model for the language for which there are no samples at all to fine-tune with.
 
 
 
