@@ -1,3 +1,22 @@
+# Some important insights:
+# When using HF, you can pad a batch to a uniform seq_len by using a DataCollator. This will padd with a value of -100 as the class label. This -100 value
+# is ignored by nn.CrossEntropyLoss as it is the default value for the ignore_index. Note that we do exactly the same but manually in our EncoderDecoder
+# train.py with: loss_fn = nn.CrossEntropyLoss(ignore_index=src_tokenizer.token_to_id('[PAD]'), label_smoothing=0.1).to(device) where we set the id of [PAD]
+# as the ignore_index and we set our attention mask similarly i.e. we always mask out padding tokens that are used as seq_len fillers to the end.
+
+# One difference for NER is that we also set -100 as the class label for ids of an entity that are not the first id of the word that we want to do NER for. So
+# these ids are also ignored by the nn.C... lost function. This is because we only want to measure success by using the first id of the word. How the others
+# were predicted does not matter, since we'll use the prediction for the first id as the predition for the whole word. DO NOTE however that contrary to the
+# "end of seq" padding tokens, we're NOT masking these out. This is because we want to include them in the context to that the model can learn how to use
+# them to predict the correct label for the first id. That's never the case for "end of seq" padding tokens, so we do mask those out.
+
+# One extra consideration: there will always be a 'O' label in NER. This is the label for anyything that is NOT a label of interest like B-PER etc. This needs
+# to be included in training because we don't want to mispredict (false postitive). Again we'd only consider the first id etc.
+
+# And: in NER you'll have entities that span multiple words (not tokens, words). This is why here we have B-PER and I-PER where I-PER is used for the 
+# subsequent words. These I-* labels also have to be predicted correctly so they are fully included in training and performance measuring.
+
+
 from datasets import DatasetDict, load_dataset
 from collections import defaultdict
 import pandas as pd
@@ -15,6 +34,10 @@ for lang, frac in zip(langs, fracs):
     # shuffle and downsample as per fracs
     for split in ds:
         panx_be[lang][split] = ds[split].shuffle(seed=0).select(range(int(frac * ds[split].num_rows)))  # Shuffle to avoid topic bias when downsampling.
+
+#print(panx_be['de']['train'][0])
+#{'tokens': ['2.000', 'Einwohnern', 'an', 'der', 'Danziger', 'Bucht', 'in', 'der', 'polnischen', 'Woiwodschaft', 'Pommern', '.'], 'ner_tags': [0, 0, 0, 0, 5, 6, 0, 0, 5, 5, 6, 0], 'langs': ['de', 'de', 'de', 'de', 'de', 'de', 'de', 'de', 'de', 'de', 'de', 'de']}
+
 
 tags = panx_be['de']['train'].features['ner_tags'].feature
 
@@ -142,6 +165,8 @@ def encode_panx_dataset(corpus, tokenizer):
         
      
 panx_de_encoded = encode_panx_dataset(panx_be['de'], xlmr_tokenizer)
+
+
 
 #print(panx_de_encoded)
 ##DatasetDict({
