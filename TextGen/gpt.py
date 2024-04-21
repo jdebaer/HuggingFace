@@ -1,19 +1,31 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 
+#device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+device = 'cpu'
 model_name = 'gpt2-xl'
-
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+n_steps = 80
+
+# Below we're using generate() without beams which basically means greedy.
+input_txt = 'Transformers are the most'
+input_ids = tokenizer(input_txt, return_tensors='pt')['input_ids'].to(device)
+output = model.generate(input_ids, max_new_tokens=n_steps, do_sample=False)
+print(tokenizer.decode(output[0]))
+
+exit(0)
+
+# Below is a manual implementation of greedy.
+
+
 
 import pandas as pd
 
 input_txt = 'Transformers are the'
 input_ids = tokenizer(input_txt, return_tensors='pt')['input_ids'].to(device)
 iterations = []
-n_steps = 8
 choices_per_step = 5
 
 with torch.no_grad():
