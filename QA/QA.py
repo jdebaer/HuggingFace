@@ -88,5 +88,3 @@ from transformers import pipeline
 
 pipe = pipeline("question-answering", model=model, tokenizer=tokenizer)
 print(pipe(question=question, context=context, topk=3))
-
-# p. 180

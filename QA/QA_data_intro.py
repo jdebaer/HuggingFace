@@ -1,4 +1,6 @@
 from datasets import get_dataset_config_names, load_dataset
+#import pandas as pd
+#pd.set_option('display.max_columns', None)
 
 domains = get_dataset_config_names('subjqa')
 #print(domains)
