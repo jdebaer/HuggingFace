@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from naive_bayesline import run_nb
 
 try:
     df_issues = pd.read_pickle('df_issues.pkl')
@@ -160,20 +161,45 @@ train_slices.append(all_indices)
 train_sample_counts.append(len(ds_dict['train']))
 train_slices = [np.squeeze(train_slice) for train_slice in train_slices]
 
-print(train_sample_counts)
-print([len(x) for x in train_slices])
+#print(train_sample_counts)
+#print([len(x) for x in train_slices])
+
+# Implement baseline w/ Naive Bayes. Sklearn NB does not support multi-label, so we'll use Skmulti-learn lib to reframe the problem to one binary
+# classifier per label to do "one vs. rest" classification. So we'll end up with n binary classifiers where n is the # of labels.
+
+def prepare_labels(batch):
+    batch['label_ids'] = mlb.transform(batch['labels'])						# Creates the 0/1 mapping vector as per the above.
+    return batch
+
+ds_dict = ds_dict.map(prepare_labels, batched=True)
 
 
+# We'll be measuring micro and macro F1-scores w/ micro for frequent labels only and latter for all labels.
+# Create dict to store these scores.
 
+micro_scores, macro_scores = run_nb(train_slices, ds_dict)
 
+# Quick vizualization.
+import matplotlib.pyplot as plt
 
+def plot_metrics(micro_scores, macro_scores, sample_sizes, current_model):
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(10,4), sharey=True)
 
+    for run in micro_scores.keys():
+        if run == current_model:
+            ax0.plot(sample_sizes, micro_scores[run], label=run, linewidth=2)
+            ax1.plot(sample_sizes, macro_scores[run], label=run, linewidth=2)
+        else:
+            ax0.plot(sample_sizes, micro_scores[run], label=run, linestyle='dashed')
+            ax1.plot(sample_sizes, macro_scores[run], label=run, linestyle='dashed')
 
+    for ax in [ax0, ax1]:
+        ax.set_xscale('log')
+        ax.set_xticks(sample_sizes)
+        ax.set_xticklabels(sample_sizes)
+        ax.minorticks_off()
 
-
-
-
-
-
-
-
+    plt.tight_layout()
+    plt.show()
+ 
+plot_metrics(micro_scores, macro_scores, train_sample_counts, 'Naive Bayes')
