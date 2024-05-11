@@ -77,3 +77,56 @@ from transformers import AutoTokenizer, AutoModel
 model_ckpt = 'miguelvictor/python-gpt2-large'
 tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 model = AutoModel.from_pretrained(model_ckpt)
+
+def mean_pooling(model_output, attention_mask):
+    
+    token_embeddings = model_output[0]
+    
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+    return sum_embeddings / sum_mask
+
+def embed_text(samples):
+
+    encodings = tokenizer(samples['text'], padding=True, truncation=True, max_length=128, return_tensors='pt')
+
+    with torch.no_grad():
+
+        model_output = model(**encodings)
+
+    pooled_embeds = mean_pooling(model_output, encodings['attention_mask'])
+
+    return{'embedding': pooled_embeds.cpu().numpy()}    
+
+tokenizer.pad_token = tokenizer.eos_token
+
+embs_train = ds_dict['train'].map(embed_text, batched=True, batch_size=16)
+embs_valid = ds_dict['valid'].map(embed_text, batched=True, batch_size=16)
+embs_test = ds_dict['test'].map(embed_text, batched=True, batch_size=16)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

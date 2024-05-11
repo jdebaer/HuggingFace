@@ -29,6 +29,7 @@ fracs = [0.007, 0.002, 0.001]
 
 panx_be = defaultdict(DatasetDict)
 
+# shrink reduce frac rate 
 for lang, frac in zip(langs, fracs):
     ds = load_dataset('xtreme', name=f'PAN-X.{lang}')
     # shuffle and downsample as per fracs
