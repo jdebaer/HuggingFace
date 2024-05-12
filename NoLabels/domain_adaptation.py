@@ -70,44 +70,48 @@ ds_dict = ds_dict.map(prepare_labels, batched=True)
 
 # See prep_data.py for explanations regareding the above. Essentially at this point our datasets are all clean and prepped and we can
 # compare with Naive Bayes via run_nb().
+# So far our samples are not tokenized yet. 
 
-from collections import defaultdict
-from datasets import DatasetDict
 
+
+############# Reduce size of datasets. Comment to undo. #############
+
+import copy
+
+ds_dict_orig = copy.deepcopy(ds_dict)
+# shrink frac reduce small
 fracs = [0.05, 0.05, 0.05, 0.01]
-ds_dict_mini = defaultdict(DatasetDict)
-
 # shuffle and downsample as per fracs
 for idx, split in enumerate(ds_dict):
-    print(split)
-    ds_dict_mini[split] = ds_dict[split].shuffle(seed=0).select(range(int(fracs[idx] * ds_dict[split].num_rows)))  # Shuffle to avoid topic bias when downsampling.
+    ds_dict[split] = ds_dict[split].shuffle(seed=0).select(range(int(fracs[idx] * ds_dict[split].num_rows)))  # Shuffle to avoid topic bias when downsampling
+
+
+
+
+############# Start of domain adaptation via MLM #############
+
 import torch
-from transformers import AutoTokenizer, AutoConfig, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoConfig
+from collections import defaultdict
 
 model_ckpt = 'bert-base-uncased'
 tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 
+# BERT tokenizer will add '[SEP]' and '[CLS]' tokens so ask for the special_tokens_mask because for MLM we want to mask these (they should not participate).
 def tokenize(batch):
     return tokenizer(batch['text'], truncation=True, max_length=128, return_special_tokens_mask=True)
 
-ds_dict_mini_mlm = defaultdict(DatasetDict)
+ds_dict_mlm = defaultdict(DatasetDict)
 
-for split in ds_dict_mini:
-    ds_dict_mini_mlm[split] = ds_dict_mini[split].map(tokenize, batched=True)
-    ds_dict_mini_mlm[split] = ds_dict_mini_mlm[split].remove_columns(['labels','text','label_ids'])
-
-#ds_dict_mini_mlm['train'] = ds_dict_mini['train'].map(tokenize, batched=True)
-#ds_dict_mini_mlm['valid'] = ds_dict_mini['valid'].map(tokenize, batched=True)
-#ds_dict_mini_mlm['test'] = ds_dict_mini['test'].map(tokenize, batched=True)
-
-# return_special_tokens_mask is to get a mask that masks out [CLS] and [SEP].
-# We don't want to use these when we do domain adaptation via masked language modeling.
+for split in ds_dict:
+    ds_dict_mlm[split] = ds_dict[split].map(tokenize, batched=True)
+    ds_dict_mlm[split] = ds_dict_mlm[split].remove_columns(['labels','text','label_ids'])			# Don't need these for MLM.
 
 #text = "this is a test"
 #print(tokenizer(text, truncation=True, max_length=128, return_special_tokens_mask=True))
 #{'input_ids': [101, 2023, 2003, 1037, 3231, 102], 'token_type_ids': [0, 0, 0, 0, 0, 0], 'attention_mask': [1, 1, 1, 1, 1, 1], 'special_tokens_mask': [1, 0, 0, 0, 0, 1]}
 
-# To do MLM training, we need to mask randdom token ids in the inputs. Data collator in HF can do that.
+# To do MLM training, we need to mask random token ids in the inputs. Data collator in HF can do that.
 
 from transformers import DataCollatorForLanguageModeling, set_seed
 
@@ -135,45 +139,108 @@ training_args = TrainingArguments(
 		per_device_train_batch_size 	= 32,
 		logging_strategy 		= 'epoch',
 		evaluation_strategy 		= 'epoch',
-		save_strategy 			= 'no',
+		#save_strategy 			= 'no',
 		num_train_epochs 		= 2,
 		push_to_hub			= False,
 		log_level 			= 'error',
 		report_to 			= 'none')
 
-# Note that we get a warning on dropped weights. This is normal since we're loading a standard BART model to do MaskedLM so we don't need them.
+# Note that we get a warning on dropped weights. This is normal since we're loading a standard BERT model to do MaskedLM so we don't need some.
 trainer = Trainer(
 		model 				= AutoModelForMaskedLM.from_pretrained(model_ckpt),
 		tokenizer			= tokenizer,
 		args				= training_args,
 		data_collator			= data_collator,
-		train_dataset			= ds_dict_mini_mlm['unsup'],
-		eval_dataset			= ds_dict_mini_mlm['train'])
+		train_dataset			= ds_dict_mlm['unsup'],
+		eval_dataset			= ds_dict_mlm['train'])
 
 trainer.train()
+trainer.save_model('./domain-adapted-model')
 
 # At this point we have used a BERT model to do domain adaptation and we have saved our model locally.
-# This was all done using unlabeled data (['unsup']).
+# This was all done using unlabeled data (['unsup']) and we 'misused' the labeled training data for validation (the more the better).
 # The next step is to fine-tune using the few labels that we have. We can also fine-tune without first doing domain adaptation but the 
 # resulting model will not be as powerful - and the model_ckpt in this case will be 'bert-case-unbased' as on p. 285.
 
-model_ckpt = f'{model_ckpt}-issues-128'
+############# Start of fine-tuning our domain-adaptated model #############
+
+from transformers import AutoModelForSequenceClassification
+from scipy.special import expit as sigmoid
+from seqeval.metrics import classification_report
+import numpy as np
+
+model_ckpt = './domain-adapted-model'
 config = AutoConfig.from_pretrained(model_ckpt)
-config.num_labals = len(all_labels)
+config.num_labels = len(all_labels)
 config.problem_type = 'multi_label_classification'
+
+# We need to tokenize for fine-tuning as well.
+
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)					# This is from our domain-adapted and saved model.
+
+def tokenize(batch):
+    return tokenizer(batch['text'], truncation=True, max_length=128)
+
+ds_dict_encoded = ds_dict_orig.map(tokenize, batched=True)
+ds_dict_encoded = ds_dict_encoded.remove_columns(['labels' ,'text'])
+# What's left: 'label_ids', 'input_ids', 'token_type_ids', 'attention_mask'
+
+ds_dict_encoded.set_format('torch')
+ds_dict_encoded = ds_dict_encoded.map(lambda x: {'label_ids_f': x['label_ids'].to(torch.float)}, remove_columns=['label_ids'])
+ds_dict_encoded = ds_dict_encoded.rename_column('label_ids_f', 'label_ids')
+
+#print(ds_dict_encoded['train'][0])
+
+def compute_metrics(pred):
+    y_true = pred.label_ids.astype(float)
+    y_true = (y_true > 0.5).astype('str').tolist()
+    y_pred = sigmoid(pred.predictions)
+    y_pred = (y_pred > 0.5).astype('str').tolist()
+
+    #print(y_true[0][0])
+    #print(y_pred[0][0])
+    #print(type(y_true[0][0]))
+    #print(type(y_pred[0][0]))
+
+    #print(y_true)
+    #print(y_pred)
+    #exit()
+
+    clf_dict = classification_report(y_true, y_pred, zero_division=0, output_dict=True, suffix=False)
+    #clf_dict = classification_report(y_true, y_pred)
+
+    return {'micro F1': clf_dict['micro avg']['f1-score'],
+            'macro F1': clf_dict['macro avg']['f1-score']}
+
+training_args_fine_tune = TrainingArguments(
+		output_dir			='./results',
+		num_train_epochs		= 2,
+		learning_rate			= 3e-5,
+		lr_scheduler_type		= 'constant',
+		per_device_train_batch_size 	= 4,
+		per_device_eval_batch_size	= 32,
+		weight_decay			= 0.0,
+		evaluation_strategy		= 'epoch',
+		save_strategy			= 'epoch',
+		logging_strategy		= 'epoch',
+		load_best_model_at_end		= True,
+		metric_for_best_model		= 'micro F1',
+		save_total_limit		= 1,
+		log_level			= 'error')	
 
 for train_slice in train_slices:
     model = AutoModelForSequenceClassification.from_pretrained(model_ckpt, config=config)
     
     trainer = Trainer(
 		model 		= model,
-		tokenizer	= tokinzer,
+		tokenizer	= tokenizer,
 		args 		= training_args_fine_tune,
 		compute_metrics = compute_metrics,
-		train_dataset	= ds_enc['train'].select(train_slice),
-		eval_dataset	= ds_enc['valid'])
+		train_dataset	= ds_dict_encoded['train'].select(train_slice),
+		eval_dataset	= ds_dict_encoded['valid'])
 
     trainer.train()
+    break
 
 
 
