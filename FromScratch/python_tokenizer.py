@@ -37,15 +37,25 @@ tokenizer = AutoTokenizer.from_pretrained('gpt2')
 # we would expecte for Python are "2 spaces" or "4 spaces" or "tab" because this sequence occurs a lot.
 
 # However, from running the complete tokenizer pipeline as below, we can see that this is not the case.
+# We can retrain the tokenizer though.
 #print(tokenizer(python_code).tokens())
 #['def', 'Ġsay', '_', 'hello', '():', 'Ċ', 'Ġ', 'Ġ', 'Ġ', 'Ġprint', '("', 'Hello', 'ĠWorld', '")', 'Ċ', 'say', '_', 'hello', '()', 'Ċ']
 # What we see is that 4 spaces are (mostly) separate tokens. 
 
-# Other useful things to look at when looking into a tokenizer:
-# 1. What are the longest "composed" tokens
-tokens = sorted(tokenizer.vocab.items(), key=lambda x: len(x[0]), reverse=True)
-print(tokens[-1][0])
-#print(tokenizer.convert_tokens_to_string(tokens[-1][0]))
+## Other useful things to look at when looking into a tokenizer:
+## 1. What are the longest "composed" tokens
+## List of tuples.
+#tokens = sorted(tokenizer.vocab.items(), key=lambda x: len(x[0]), reverse=True)
+## This is a list of tuples (<token>,<id>).
+#print([f'{tokenizer.decode(t)}' for _,t in tokens[:10]])
+#
+## 2. What are the last words added to the vocabulary, so the least frequent ones. These are the tokens with the highest id numbers.
+#tokens = sorted(tokenizer.vocab.items(), key = lambda x: x[1], reverse=True)
+#print([f'{tokenizer.decode(t)}' for _,t in tokens[:10]])
+
+
+
+#################### Retraining a tokenizer #######################
 
 
 
@@ -59,10 +69,6 @@ print(tokens[-1][0])
 
 
 
-
-
-
-# We can retrain the tokenizer though.
 
 
 
