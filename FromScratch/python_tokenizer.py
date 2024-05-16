@@ -57,6 +57,79 @@ tokenizer = AutoTokenizer.from_pretrained('gpt2')
 
 #################### Retraining a tokenizer #######################
 
+from tqdm.auto import tqdm
+from datasets import load_dataset
+from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
+
+byte_to_unicode_map = bytes_to_unicode()
+unicode_to_byte_map = dict((v,k) for k, v in byte_to_unicode_map.items())
+# The below is the base vocabulary for any byte-based tokenizer. Should work for any programming language.
+base_vocab = list(unicode_to_byte_map.keys())
+
+
+
+length = 1000
+dataset_name = 'transformersbook/codeparrot-train'
+dataset = load_dataset(dataset_name, split='train', streaming=True)
+iter_dataset = iter(dataset)
+
+def batch_iterator(batch_size=10):
+    for _ in tqdm(range(0, length, batch_size)):
+        yield [next(iter_dataset)['content'] for _ in range(batch_size)]
+
+# Vocab sizes that are a multiple of 8 is better for certain GPU/TPU computations - look into this.
+new_tokenizer = tokenizer.train_new_from_iterator(batch_iterator(), vocab_size=12496, initial_alphabet=base_vocab)
+
+# This first 256 tokens will be our base vocab, to which we will have added new tokens during training (each token based on combining other tokens as per BPE).
+# Let's see what the first added tokens are.
+
+# new_tokenizer.vocab is a dict where each key:value is 'abilities': 8440 so <token>:<id>.
+# Using items() on it returns these key:value pairs as tuples.
+
+#tokens = sorted(new_tokenizer.vocab.items(), key=lambda x: x[1], reverse=False)
+#print([f'{new_tokenizer.decode(t)}' for _,t in tokens[257:280]])
+## This already contains combinations of white space as tokens.
+##['  ', '    ', '   ', '\n    ', 'se', 're', 'in', 'on', 'te', '\n       ', '        ', '\n   ', 'st', 'or', 'de', 'le', 'th', ' =', 'lf', 'al', 'self', 'me', 'ti']
+#
+## Same for last added words.
+#print([f'{new_tokenizer.decode(t)}' for _,t in tokens[-10:]])
+
+# Using our retrained tokenizer for a test.
+print(new_tokenizer(python_code).tokens())
+
+# When creating a tokenizer for a coding language, at least all the reserved key words should be full tokens in the vocab, meaning they should not have to
+# be created from multiple tokens.
+
+print(new_tokenizer.vocab)
+
+# For Python, it's easy to get all the keywords. For another language we'll have to get them some other way.
+import keyword
+
+for keyword in keyword.kwlist:
+    if keyword not in new_tokenizer.vocab:
+        print(f'Keyword "{keyword}" is not in the vocabulary.')
+    
+# Ìf frequent keywords are missing, then use more data to train and increase the vocab size and length.
+
+length = 2000
+new_tokenizer_larger = tokenizer.train_new_from_iterator(batch_iterator(), vocab_size=32768, initial_alphabet=base_vocab)
+
+# Compating the efficiency of the retrained tokenizer with the standard tokenizer we started with (coming from GPT-2) can be done as follows.
+# Feed them the same python code, and compare the amount of tokens needed to represent it. The less tokens needed, the more efficient the tokenizer.
+# Let's do the test.
+
+# These are lists.
+print(len(tokenizer(python_code).tokens()))				# 20
+print(len(new_tokenizer(python_code).tokens()))				# 19
+print(len(new_tokenizer_larger(python_code).tokens()))			# 18 
+
+# Note that this has an impact on the context window, which is in tokens/ids, and NOT in "words". 
+# Example: traininig a model with the new tokenizer using a CW of 1024 captures the same amount of context as training a model with the old tokenizer
+# with a CW of 2048. This is because for the same amount of pure text, the old tokenizer needs twice as many tokens. This means we can train our model
+# much more efficiently (faster and less RAM requirements).
+
+
+
 
 
 
