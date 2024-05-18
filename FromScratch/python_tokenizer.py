@@ -128,7 +128,7 @@ print(len(new_tokenizer_larger(python_code).tokens()))			# 18
 # with a CW of 2048. This is because for the same amount of pure text, the old tokenizer needs twice as many tokens. This means we can train our model
 # much more efficiently (faster and less RAM requirements).
 
-
+print(type(tokenizer("this is a test")))
 
 
 
