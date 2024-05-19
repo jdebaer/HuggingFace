@@ -1,33 +1,24 @@
 from transformers import AutoTokenizer
 from tqdm.auto import tqdm
-from datasets import load_dataset
+from datasets import load_dataset, ReadInstruction
+import datasets
+import transformers
 from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
 from constantlengthdataset import ConstantLengthDataset
 
 model_ckpt = 'gpt2'
 
-# Take tokenizer from the model and retrain it.
-tokenizer = AutoTokenizer.from_pretrained(model_ckpt)				
-byte_to_unicode_map = bytes_to_unicode()
-unicode_to_byte_map = dict((v,k) for k, v in byte_to_unicode_map.items())
-base_vocab = list(unicode_to_byte_map.keys())
-
-length = 2000
-dataset_name = 'transformersbook/codeparrot-train'
-dataset = load_dataset(dataset_name, split='train', streaming=True)
-iter_dataset = iter(dataset)
-
-def batch_iterator(batch_size=10):
-    for _ in tqdm(range(0, length, batch_size)):
-        yield [next(iter_dataset)['content'] for _ in range(batch_size)]
-
-tokenizer = tokenizer.train_new_from_iterator(batch_iterator(), vocab_size=32768, initial_alphabet=base_vocab)
+tokenizer = AutoTokenizer.from_pretrained("tokenizers/" + model_ckpt)				# Our retrained, saved tokenizer. 
 
 ##### Code above is all that's needed to retrain HF tokenizer. python_tokenizer.py has all the details and comments.
 
 ################################# Train a HF model from scratch ################################
 
 from transformers import AutoConfig, AutoModelForCausalLM
+from accelerate.utils import set_seed
+from accelerate import Accelerator
+
+project_name = 'gpt2'
 
 # Note: if you would have saved the retrained tokenizer to the hub, it would have a ckpt name and you would load it like this:
 # tokenizer = AutoTokenizer.from_pretrained(model_cpkt)  	# With model_ckpt being the name you used when saving your retrained tokenizer.
@@ -40,22 +31,10 @@ config = AutoConfig.from_pretrained(model_ckpt, vocab_size=len(tokenizer))
 model = AutoModelForCausalLM.from_config(config)
 
 # Saving a model to a file.
+
 model.save_pretrained("models/" + model_ckpt, push_to_hub=False, organization="transformersbook")
 
-# Estimate how many Unicode characters we typically have per token, based on 500 samples.
-samples, total_characters, total_tokens = 500, 0, 0
-dataset_for_sample = load_dataset('transformersbook/codeparrot-train', split='train', streaming=True)
-for _,sample in tqdm(zip(range(samples), iter(dataset)), total=samples):
-    total_characters += len(sample['content'])
-    total_tokens += len(tokenizer(sample['content']).tokens())
-characters_per_token = total_characters / total_tokens
-
-## Run a test with characters_per_token in our call to ConstantLengthDataset.
-#shuffled_dataset = dataset.shuffle(buffer_size=100)
-#constant_length_dataset = ConstantLengthDataset(tokenizer, shuffled_dataset, num_of_seqs=10, chars_per_token=characters_per_token, seq_len=1014)
-#dataset_iterator = iter(constant_length_dataset)
-#lengths = [len(b) for _,b in zip(range(5), dataset_iterator)]
-#print(lengths)
+# At this point we have a reconfigured, completely untrailed gpt-2 model locally saved.
 
 ################################################ Accelerate ##############################################
 
@@ -69,13 +48,14 @@ config = {	'train_batch_size'		: 2,
 		'shuffle_buffer'		: 1000,
 		'learning_rate'			: 2e-4,
 		'lr_scheduler_type'		: 'cosine',
-		'num_warmup_steps'		: 750,
-		'gradient_accumulation_steps'	: 16,
-		'max_train_steps'		: 50000,
+		'num_warmup_steps'		: 1,						# Edu mode, put to 750 or so.
+		'gradient_accumulation_steps'	: 1,						# Edu mode, put to 16 or so.
+		'max_train_steps'		: 1,						# Edu mode, put to 50000 or so.
 		'max_eval_steps'		: -1,
 		'seq_len'			: 1024,
 		'seed'				: 1,
-		'save_checkpoint_steps'		: 50000		}
+		'save_checkpoint_steps'		: 1,						# Edu mode, put to 5000 or so.
+                'gradient_checkpointing'	: True		}
 
 args = Namespace(**config)
 
@@ -100,7 +80,7 @@ def setup_logging(project_name):
         ]
     )
     if accelerator.is_main_process:						# We only want to set up logging once.
-        wandb.init(project=project_name, config=args)
+        wandb.init(project=project_name, config=args, anonymous='allow')
         run_name = wandb.run.name
         tb_writer = SummaryWriter()
         tb_writer.add_hparams(vars(args), {'0': 0})
@@ -125,20 +105,48 @@ def log_metrics(step, metrics):
 # 3. Function to create DataLoaders based on our IterableDataset called ConstantLengthDataset. DataLoader takes care of batching.
 # Note that Accelerate automatically distributes the batches to workers.
 
-from toch.untils.data.dataloader import DataLoader
+# Estimate how many Unicode characters we typically have per token, based on 500 samples.
+dataset_name = 'transformersbook/codeparrot-train'
+#dataset = load_dataset(dataset_name, split='train[:10%]', streaming=True)				# Edu mode so we only load 10%.
+dataset = load_dataset(dataset_name, split='train[:0.1%]')						# Edu mode so we only load 10%.
+
+samples, total_characters, total_tokens = 500, 0, 0
+for _,sample in tqdm(zip(range(samples), iter(dataset)), total=samples):
+    total_characters += len(sample['content'])
+    total_tokens += len(tokenizer(sample['content']).tokens())
+characters_per_token = total_characters / total_tokens
+
+## Run a test with characters_per_token in our call to ConstantLengthDataset.
+#shuffled_dataset = dataset.shuffle(buffer_size=100)
+#constant_length_dataset = ConstantLengthDataset(tokenizer, shuffled_dataset, num_of_seqs=10, chars_per_token=characters_per_token, seq_len=1014)
+#dataset_iterator = iter(constant_length_dataset)
+#lengths = [len(b) for _,b in zip(range(5), dataset_iterator)]
+#print(lengths)
+
+from torch.utils.data.dataloader import DataLoader
     
 def create_dataloaders(dataset_name):
      
-    train_data_ = load_dataset(dataset_name + '-train', split='train', streaming=True)
-    train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
+    # The dataset we're using only has a 'train' split, so we need to split that into a 'train' and a 'valid' subsplit.
+    print("creating the datasets")
 
-    valid_data = load_dataset(dataset_name + '-valid', split='validation', streaming=True)
+    train_data_unshuffled = load_dataset(dataset_name, split=ReadInstruction('train', to=9, unit='%'))			# Edu mode so only 9%.
+    train_data = train_data_unshuffled.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)                         # Note the shuffle.
+    valid_data = load_dataset(dataset_name, split=ReadInstruction('train', from_=-1, unit='%'))				# Edu mode so only 1%.
 
-    train_dataset = ConstantLengthDataset(tokenizer, train_data, seq_len = args.seq_len)
-    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, seq_len = args.seq_len)
+    ## Original code - use if you have 'train' and 'validation' splits.
+    #train_data_unshuffled = load_dataset(dataset_name, split='train')							# Removed ',streaming=True'.
+    #train_data = train_data_unshuffled.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)				# Note the shuffle.
+    #valid_data = load_dataset(dataset_name, split='validation')							# Removed ',streaming=True'.
+
+    # Ideally num_of_seq and chars_per_token are also in the args.
+    train_dataset = ConstantLengthDataset(tokenizer, train_data, num_of_seq=10, chars_per_token=characters_per_token, seq_len = args.seq_len)
+    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, num_of_seq=10, chars_per_token=characters_per_token, seq_len = args.seq_len)
+    #print("ok")
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size)
     eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size)
+    #print("ok2")
 
     return train_dataloader, eval_dataloader
 
@@ -206,61 +214,78 @@ def evaluate():
     return loss.item(), perplexity.item()
 
 
+# 6. Core training code.
+
 set_seed(args.seed)
 
 # Get an accelerator.
+#####################
+
 accelerator = Accelerator()
-samples_per_step = accelerator.state.num_processes * args.train_batch_size	# This makes sense, each GPU will handle a batch.
+samples_per_step = accelerator.state.num_processes * args.train_batch_size	# Samples over all the GPUs per step (which is gradient acc.-driven here).
 
 # Set up logging.
-logger, tb_writer, run_name = setup_logging(project_name.split('/')[1])
+#################
+
+#logger, tb_writer, run_name = setup_logging(project_name.split('/')[1])
+logger, tb_writer, run_name = setup_logging(project_name)
 logger.info(accelerator.state)
 
-# With Repository we can pull, branch, commit, or push. We can continuous push model checkpoints to the Hub.
+## With Repository we can pull, branch, commit, or push. We can continuous push model checkpoints to the Hub.
+#from huggingface_hub import Repository
+#if accelerator.is_main_process:
+#    hf_repo = Repository('./', clone_from=project_name, revision=run_name)
 
-from huggingface_hub import Repository
+# Load/get model and tokenizer.
+###############################
 
-if accelerator.is_main_process:
-    hf_repo = Repository('./', clone_from=project_name, revision=run_name)
+# Activation checkpointing (or gradient checkpointing) is a technique to reduce memory usage by clearing activations of certain layers and 
+# recomputing them during a backward pass. Effectively, this trades extra computation time for reduced memory usage.
+# Note that gradient checkpoints has nothing to do with gradient accumulation (the latter being the 'construction' of the gradient over multiple batches).
+#model = AutoModelForCausalLM.from_pretrained ("models/" + model_ckpt, gradient_checkpointing=True)	# The untrained model with new config we have saved.
+model = AutoModelForCausalLM.from_pretrained ("models/" + model_ckpt)					# The untrained model with new config we have saved.
 
-# Load model and tokenizer.
-
-model = AutoModelForCausalLM.from_pretrained ('./', gradient_checkpointing=True)		# The untrained model with new config we have saved.
-
-tokenizer = AutoTokenizer.from_pretrained('./')							# Our retrained tokenizer.
+#tokenizer = AutoTokenizer.from_pretrained("tokenizers/" + model_ckpt)					# Our retrained tokenizer. We still have the reference here.
 
 # Get dataloaders.
+##################
 
 train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
 
 # Set up optimizer and learning rate scheduler.
+###############################################
 
 optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
+
+from transformers.optimization import get_scheduler
+
+# A learning rate schedule changes the learning rate during learning and is most often changed between epochs/iterations. This is mainly done 
+# with two parameters: decay and momentum. There are many different learning rate schedules but the most common are time-based, step-based and exponential.
 lr_scheduler = get_scheduler(	name			= args.lr_scheduler_type,
 				optimizer		= optimizer,
 				num_warmup_steps 	= args.num_warmup_steps,
 				num_training_steps	= args.max_train_steps)
 
-def get_lr()
-    return optimizer.param_groups[0]['lr']
-
 # Make model, optimizer and dataloaders	aware of the fact that we're using Accelerate.
+######################################################################################
 
 model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(model, optimizer, train_dataloader, eval_dataloader)
 
 # Train the model.
+##################
 
 model.train()							
 
 completed_steps = 0
 
+# This code currently cannot train over multiple epochs.
 for step, batch in enumerate(train_dataloader, start=1):
     
-    loss = model(batch, labels=batch).loss
+    loss = model(batch, labels=batch).loss							# gpt-2 model understands what it needs as inputs and labels.
 
-    log_metrics(step, {'lr': get_lr(), 'samples': step*samples_per_step, 'steps': completed_steps, 'loss/train': loss.item()})
+    log_metrics(step, {'lr': optimizer.param_groups[0]['lr'], 'samples': step*samples_per_step, 'steps': completed_steps, 'loss/train': loss.item()})
 
-    loss = loss / args.gradient_accumulation_steps
+    loss = loss / args.gradient_accumulation_steps						# As we're doing gradient accumulation.
 
     # loss.backward() (or in this case accelerator.backward(loss) computes dloss/dx for every parameter x which has requires_grad=True. 
     # These are accumulated into x.grad for every parameter x.
@@ -269,7 +294,7 @@ for step, batch in enumerate(train_dataloader, start=1):
 
     if step % args.gradient_accumulation_steps == 0:
         optimizer.step()
-        lr_scheduler_step()
+        lr_scheduler.step()
         optimizer.zero_grad()
         completed_steps += 1
 
@@ -278,13 +303,13 @@ for step, batch in enumerate(train_dataloader, start=1):
         eval_loss, perplexity = evaluate()
         log_metrics(step, {'loss/eval': eval_loss, 'perplexity': perplexity})
 
-        # Always perform these two steps before savings a model to make sure it's properly synchronized.
+        # With Accelerate, always perform these two steps before savings a model to make sure it's properly synchronized.
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
 
-        if accelerator.is_main_process:
-            unwrapped_model.save_pretrained('./')
-            # hf_repo.push_to_hub(commit_message=f'step {step}'        
+        #if accelerator.is_main_process:
+        #    unwrapped_model.save_pretrained('./')
+        #    hf_repo.push_to_hub(commit_message=f'step {step}'        
         
         model.train()
 
@@ -299,9 +324,9 @@ log_metrics(step, {'loss/eval': eval_loss, 'perplexity': perplexity})
 accelerator.wait_for_everyone()
 unwrapped_model = accelerator.unwrap_model(model)
 
-if accelerator.is_main_process:
-    unwrapped_model.save_pretrained('./')
-    # hf_repo.push_to_hub(commit_message=f'final model'        
+#if accelerator.is_main_process:
+#    unwrapped_model.save_pretrained('./')
+#    hf_repo.push_to_hub(commit_message=f'final model'        
 
 
 

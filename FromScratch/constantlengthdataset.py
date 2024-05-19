@@ -12,6 +12,8 @@ from torch.utils.data import IterableDataset
 # way to go.
 # Note that if you concat ALL the samples and then split, you'll only lose a tiny piece of data at the end, no neglectible.
 
+# HF dataset -> IterableDataset -> DataLoader
+
 class ConstantLengthDataset(IterableDataset):
     
     def __init__(self, tokenizer, dataset, seq_len=1024, num_of_seqs=1014, chars_per_token=3.6):
