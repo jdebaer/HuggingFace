@@ -208,11 +208,11 @@ def evaluate():
 
 set_seed(args.seed)
 
-# Accelerator
+# Get an accelerator.
 accelerator = Accelerator()
 samples_per_step = accelerator.state.num_processes * args.train_batch_size	# This makes sense, each GPU will handle a batch.
 
-# Logging
+# Set up logging.
 logger, tb_writer, run_name = setup_logging(project_name.split('/')[1])
 logger.info(accelerator.state)
 
@@ -223,9 +223,122 @@ from huggingface_hub import Repository
 if accelerator.is_main_process:
     hf_repo = Repository('./', clone_from=project_name, revision=run_name)
 
-# Load model and tokenizer
+# Load model and tokenizer.
 
-model = AutoModelForCausalLM.from_pretrained ('./', gradient
+model = AutoModelForCausalLM.from_pretrained ('./', gradient_checkpointing=True)		# The untrained model with new config we have saved.
+
+tokenizer = AutoTokenizer.from_pretrained('./')							# Our retrained tokenizer.
+
+# Get dataloaders.
+
+train_dataloader, eval_dataloader = create_dataloaders(dataset_name)
+
+# Set up optimizer and learning rate scheduler.
+
+optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
+lr_scheduler = get_scheduler(	name			= args.lr_scheduler_type,
+				optimizer		= optimizer,
+				num_warmup_steps 	= args.num_warmup_steps,
+				num_training_steps	= args.max_train_steps)
+
+def get_lr()
+    return optimizer.param_groups[0]['lr']
+
+# Make model, optimizer and dataloaders	aware of the fact that we're using Accelerate.
+
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(model, optimizer, train_dataloader, eval_dataloader)
+
+# Train the model.
+
+model.train()							
+
+completed_steps = 0
+
+for step, batch in enumerate(train_dataloader, start=1):
+    
+    loss = model(batch, labels=batch).loss
+
+    log_metrics(step, {'lr': get_lr(), 'samples': step*samples_per_step, 'steps': completed_steps, 'loss/train': loss.item()})
+
+    loss = loss / args.gradient_accumulation_steps
+
+    # loss.backward() (or in this case accelerator.backward(loss) computes dloss/dx for every parameter x which has requires_grad=True. 
+    # These are accumulated into x.grad for every parameter x.
+    # optimizer.step() updates the value of x using the gradient x.grad.
+    accelerator.backward(loss)
+
+    if step % args.gradient_accumulation_steps == 0:
+        optimizer.step()
+        lr_scheduler_step()
+        optimizer.zero_grad()
+        completed_steps += 1
+
+    if step % args.save_checkpoint_steps == 0:
+        logger.info('Evaluating and savings model checkpoint')
+        eval_loss, perplexity = evaluate()
+        log_metrics(step, {'loss/eval': eval_loss, 'perplexity': perplexity})
+
+        # Always perform these two steps before savings a model to make sure it's properly synchronized.
+        accelerator.wait_for_everyone()
+        unwrapped_model = accelerator.unwrap_model(model)
+
+        if accelerator.is_main_process:
+            unwrapped_model.save_pretrained('./')
+            # hf_repo.push_to_hub(commit_message=f'step {step}'        
+        
+        model.train()
+
+    if completed_steps >= args.max_train_steps:
+        break
+    
+# Evaluate and save the last checkpoint.
+logger.info('Evaluating and saving model after training')
+eval_loss, perplexity = evaluate()
+log_metrics(step, {'loss/eval': eval_loss, 'perplexity': perplexity})
+
+accelerator.wait_for_everyone()
+unwrapped_model = accelerator.unwrap_model(model)
+
+if accelerator.is_main_process:
+    unwrapped_model.save_pretrained('./')
+    # hf_repo.push_to_hub(commit_message=f'final model'        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
