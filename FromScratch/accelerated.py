@@ -5,6 +5,7 @@ import datasets
 import transformers
 from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
 from constantlengthdataset import ConstantLengthDataset
+import torch
 
 model_ckpt = 'gpt2'
 
@@ -14,7 +15,7 @@ tokenizer = AutoTokenizer.from_pretrained("tokenizers/" + model_ckpt)				# Our r
 
 ################################# Train a HF model from scratch ################################
 
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AdamW
 from accelerate.utils import set_seed
 from accelerate import Accelerator
 
@@ -51,7 +52,7 @@ config = {	'train_batch_size'		: 2,
 		'num_warmup_steps'		: 1,						# Edu mode, put to 750 or so.
 		'gradient_accumulation_steps'	: 1,						# Edu mode, put to 16 or so.
 		'max_train_steps'		: 1,						# Edu mode, put to 50000 or so.
-		'max_eval_steps'		: -1,
+		'max_eval_steps'		: 1,						# Edu mode, set to -1.
 		'seq_len'			: 1024,
 		'seed'				: 1,
 		'save_checkpoint_steps'		: 1,						# Edu mode, put to 5000 or so.
@@ -105,16 +106,18 @@ def log_metrics(step, metrics):
 # 3. Function to create DataLoaders based on our IterableDataset called ConstantLengthDataset. DataLoader takes care of batching.
 # Note that Accelerate automatically distributes the batches to workers.
 
-# Estimate how many Unicode characters we typically have per token, based on 500 samples.
+## Estimate how many Unicode characters we typically have per token, based on 500 samples.
 dataset_name = 'transformersbook/codeparrot-train'
-#dataset = load_dataset(dataset_name, split='train[:10%]', streaming=True)				# Edu mode so we only load 10%.
-dataset = load_dataset(dataset_name, split='train[:0.1%]')						# Edu mode so we only load 10%.
-
-samples, total_characters, total_tokens = 500, 0, 0
-for _,sample in tqdm(zip(range(samples), iter(dataset)), total=samples):
-    total_characters += len(sample['content'])
-    total_tokens += len(tokenizer(sample['content']).tokens())
-characters_per_token = total_characters / total_tokens
+#dataset_full = load_dataset(dataset_name, split='train', streaming=True)	
+#dataset = dataset_full.take(500)
+#
+#samples, total_characters, total_tokens = 500, 0, 0
+#for _,sample in tqdm(zip(range(samples), iter(dataset)), total=samples):
+#    total_characters += len(sample['content'])
+#    total_tokens += len(tokenizer(sample['content']).tokens())
+#characters_per_token = total_characters / total_tokens
+#print(characters_per_token)
+## This gives about 3.6 for characters_per_token.
 
 ## Run a test with characters_per_token in our call to ConstantLengthDataset.
 #shuffled_dataset = dataset.shuffle(buffer_size=100)
@@ -128,25 +131,26 @@ from torch.utils.data.dataloader import DataLoader
 def create_dataloaders(dataset_name):
      
     # The dataset we're using only has a 'train' split, so we need to split that into a 'train' and a 'valid' subsplit.
-    print("creating the datasets")
+    # The set is huge so we need to use streaming mode, so we'll use the first 500 for validation and the rest for training.
+    # This is done with take() and skip(), and we have to run shuffle before we start taking and skipping.
+    # Technically though only the training set needs to be shuffled.
 
-    train_data_unshuffled = load_dataset(dataset_name, split=ReadInstruction('train', to=9, unit='%'))			# Edu mode so only 9%.
-    train_data = train_data_unshuffled.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)                         # Note the shuffle.
-    valid_data = load_dataset(dataset_name, split=ReadInstruction('train', from_=-1, unit='%'))				# Edu mode so only 1%.
-
+    dataset_full_unshuffled = load_dataset(dataset_name, split='train', streaming=True)
+    dataset_full = dataset_full_unshuffled.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)
+    valid_data = dataset_full.take(500)
+    train_data = dataset_full.skip(500)
+    
     ## Original code - use if you have 'train' and 'validation' splits.
     #train_data_unshuffled = load_dataset(dataset_name, split='train')							# Removed ',streaming=True'.
     #train_data = train_data_unshuffled.shuffle(buffer_size=args.shuffle_buffer, seed=args.seed)				# Note the shuffle.
     #valid_data = load_dataset(dataset_name, split='validation')							# Removed ',streaming=True'.
 
     # Ideally num_of_seq and chars_per_token are also in the args.
-    train_dataset = ConstantLengthDataset(tokenizer, train_data, num_of_seq=10, chars_per_token=characters_per_token, seq_len = args.seq_len)
-    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, num_of_seq=10, chars_per_token=characters_per_token, seq_len = args.seq_len)
-    #print("ok")
+    train_dataset = ConstantLengthDataset(tokenizer, train_data, num_of_seqs=10, chars_per_token=3.6, seq_len = args.seq_len)
+    valid_dataset = ConstantLengthDataset(tokenizer, valid_data, num_of_seqs=10, chars_per_token=3.6, seq_len = args.seq_len)
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size)
     eval_dataloader = DataLoader(valid_dataset, batch_size=args.valid_batch_size)
-    #print("ok2")
 
     return train_dataloader, eval_dataloader
 
@@ -323,6 +327,7 @@ log_metrics(step, {'loss/eval': eval_loss, 'perplexity': perplexity})
 
 accelerator.wait_for_everyone()
 unwrapped_model = accelerator.unwrap_model(model)
+
 
 #if accelerator.is_main_process:
 #    unwrapped_model.save_pretrained('./')
