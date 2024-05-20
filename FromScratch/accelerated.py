@@ -45,7 +45,16 @@ from argparse import Namespace
 
 config = {	'train_batch_size'		: 2,
 		'valid_batch_size'		: 2,
+
+                # Countering overfitting:
+                # Weight decay is equivalent to L2 regularition. In general there are these forms of regularization:
+                # L1/L2 regularization (with L2 being equiv. to weight decay).
+                # Drop out regularization.
+                # Early stopping -> look at training and validation loss and stop if validation loss is going up again (congtroversial).
+                # Data augmentation == feeding in more data, but this might not always be possible. For images it's easier since we can rotate
+                # images etc.
 		'weight_decay'			: 0.1,
+
 		'shuffle_buffer'		: 1000,
 		'learning_rate'			: 2e-4,
 		'lr_scheduler_type'		: 'cosine',
